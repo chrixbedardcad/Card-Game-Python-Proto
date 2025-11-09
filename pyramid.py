@@ -326,17 +326,21 @@ class AssetsManager:
         if self.target_dir.exists() and (self.target_dir / "AS.png").exists() and (self.target_dir / "back.png").exists():
             return
         self.target_dir.mkdir(parents=True, exist_ok=True)
-        try:
-            self._download_and_prepare_kenney()
-        except Exception:
-            shutil.rmtree(self.target_dir, ignore_errors=True)
-            self.target_dir.mkdir(parents=True, exist_ok=True)
+        attempts = [self._download_and_prepare_kenney, self._download_and_prepare_byron]
+        for attempt in attempts:
             try:
-                self._download_and_prepare_byron()
-            except Exception as exc:
-                raise RuntimeError(
-                    "Failed to download card assets. Please connect to the internet and try again."
-                ) from exc
+                attempt()
+                return
+            except Exception:
+                shutil.rmtree(self.target_dir, ignore_errors=True)
+                self.target_dir.mkdir(parents=True, exist_ok=True)
+                continue
+        try:
+            self._generate_placeholder_assets()
+        except Exception as exc:
+            raise RuntimeError(
+                "Failed to prepare card assets. Please install pygame with font support or connect to the internet and try again."
+            ) from exc
 
     def _download_zip(self, url: str) -> bytes:
         if requests is not None:
@@ -431,6 +435,59 @@ class AssetsManager:
                 shutil.copyfile(back_candidates[0], self.target_dir / "back.png")
             finally:
                 shutil.rmtree(tmp_dir, ignore_errors=True)
+
+    def _generate_placeholder_assets(self) -> None:
+        needs_quit = False
+        needs_font_quit = False
+        if not pygame.get_init():
+            pygame.init()
+            needs_quit = True
+        if not pygame.font.get_init():
+            pygame.font.init()
+            needs_font_quit = True
+        try:
+            card_size = (CARD_WIDTH, CARD_HEIGHT)
+            background_color = (240, 240, 240)
+            border_color = (20, 20, 20)
+            suit_symbols = {"C": "♣", "D": "♦", "H": "♥", "S": "♠"}
+            suit_colors = {"C": (0, 0, 0), "S": (0, 0, 0), "D": (180, 0, 0), "H": (180, 0, 0)}
+            rank_font = pygame.font.SysFont("arial", 40, bold=True)
+            suit_font = pygame.font.SysFont("arial", 36)
+            center_font = pygame.font.SysFont("arial", 64, bold=True)
+
+            for rank in RANKS:
+                for suit in SUITS:
+                    surface = pygame.Surface(card_size, pygame.SRCALPHA)
+                    surface.fill(background_color)
+                    pygame.draw.rect(surface, border_color, surface.get_rect(), 4, border_radius=8)
+                    color = suit_colors[suit]
+                    symbol = suit_symbols[suit]
+                    rank_text = rank_font.render(rank, True, color)
+                    suit_text = suit_font.render(symbol, True, color)
+                    surface.blit(rank_text, (10, 8))
+                    surface.blit(suit_text, (10, 50))
+                    center_text = center_font.render(symbol, True, color)
+                    center_rect = center_text.get_rect(center=(card_size[0] // 2, card_size[1] // 2))
+                    surface.blit(center_text, center_rect)
+                    pygame.image.save(surface, str(self.target_dir / f"{rank}{suit}.png"))
+
+            back_surface = pygame.Surface(card_size, pygame.SRCALPHA)
+            back_surface.fill((30, 60, 120))
+            pygame.draw.rect(back_surface, border_color, back_surface.get_rect(), 4, border_radius=8)
+            pattern_color = (200, 200, 255)
+            for x in range(0, card_size[0], 14):
+                pygame.draw.rect(back_surface, pattern_color, (x, 0, 6, card_size[1]))
+            overlay_color = (20, 40, 90, 120)
+            overlay = pygame.Surface(card_size, pygame.SRCALPHA)
+            for y in range(0, card_size[1], 14):
+                pygame.draw.rect(overlay, overlay_color, (0, y, card_size[0], 6))
+            back_surface.blit(overlay, (0, 0))
+            pygame.image.save(back_surface, str(self.target_dir / "back.png"))
+        finally:
+            if needs_font_quit:
+                pygame.font.quit()
+            if needs_quit:
+                pygame.quit()
 
     def load_images(self) -> None:
         self.ensure_assets()
@@ -756,13 +813,14 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     except argparse.ArgumentTypeError as exc:
         print(exc, file=sys.stderr)
         return 2
+    pygame.init()
     assets = AssetsManager(ASSETS_DIR)
     try:
         assets.ensure_assets()
     except Exception as exc:
         print(exc, file=sys.stderr)
+        pygame.quit()
         return 1
-    pygame.init()
     screen = pygame.display.set_mode(window_size, pygame.RESIZABLE)
     pygame.display.set_caption("Pyramid (Match-13) Solitaire")
     assets.load_images()
