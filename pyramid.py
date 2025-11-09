@@ -23,14 +23,17 @@ from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 ASSETS_DIR = Path(__file__).resolve().parent / "assets" / "cards"
 MAX_REDEALS_DEFAULT = 0
 WINDOW_DEFAULT = (900, 700)
-CARD_WIDTH = 90
-CARD_HEIGHT = 130
-CARD_SPACING_X = 24
-CARD_SPACING_Y = 34
+CARD_WIDTH = 56
+CARD_HEIGHT = 72
+CARD_SPACING_X = 14
+CARD_SPACING_Y = 16
 BUTTON_WIDTH = 150
 BUTTON_HEIGHT = 40
 HUD_FONT_SIZE = 20
 MESSAGE_DURATION = 1.5
+PLAY_AREA_TOP = 80
+BUTTON_AREA_TOP = 80
+STOCK_X = 80
 
 try:
     import pygame
@@ -451,9 +454,13 @@ class AssetsManager:
             border_color = (20, 20, 20)
             suit_symbols = {"C": "♣", "D": "♦", "H": "♥", "S": "♠"}
             suit_colors = {"C": (0, 0, 0), "S": (0, 0, 0), "D": (180, 0, 0), "H": (180, 0, 0)}
-            rank_font = pygame.font.SysFont("arial", 40, bold=True)
-            suit_font = pygame.font.SysFont("arial", 36)
-            center_font = pygame.font.SysFont("arial", 64, bold=True)
+            rank_font_size = max(16, int(CARD_HEIGHT * 0.4))
+            suit_font_size = max(14, int(CARD_HEIGHT * 0.35))
+            center_font_size = max(24, int(CARD_HEIGHT * 0.6))
+            rank_font = pygame.font.SysFont("arial", rank_font_size, bold=True)
+            suit_font = pygame.font.SysFont("arial", suit_font_size)
+            center_font = pygame.font.SysFont("arial", center_font_size, bold=True)
+            padding = max(4, int(CARD_WIDTH * 0.18))
 
             for rank in RANKS:
                 for suit in SUITS:
@@ -464,8 +471,8 @@ class AssetsManager:
                     symbol = suit_symbols[suit]
                     rank_text = rank_font.render(rank, True, color)
                     suit_text = suit_font.render(symbol, True, color)
-                    surface.blit(rank_text, (10, 8))
-                    surface.blit(suit_text, (10, 50))
+                    surface.blit(rank_text, (padding, padding))
+                    surface.blit(suit_text, (padding, padding + rank_text.get_height()))
                     center_text = center_font.render(symbol, True, color)
                     center_rect = center_text.get_rect(center=(card_size[0] // 2, card_size[1] // 2))
                     surface.blit(center_text, center_rect)
@@ -475,12 +482,16 @@ class AssetsManager:
             back_surface.fill((30, 60, 120))
             pygame.draw.rect(back_surface, border_color, back_surface.get_rect(), 4, border_radius=8)
             pattern_color = (200, 200, 255)
-            for x in range(0, card_size[0], 14):
-                pygame.draw.rect(back_surface, pattern_color, (x, 0, 6, card_size[1]))
+            pattern_step = max(6, int(CARD_WIDTH * 0.25))
+            pattern_width = max(3, int(CARD_WIDTH * 0.12))
+            for x in range(0, card_size[0], pattern_step):
+                pygame.draw.rect(back_surface, pattern_color, (x, 0, pattern_width, card_size[1]))
             overlay_color = (20, 40, 90, 120)
             overlay = pygame.Surface(card_size, pygame.SRCALPHA)
-            for y in range(0, card_size[1], 14):
-                pygame.draw.rect(overlay, overlay_color, (0, y, card_size[0], 6))
+            overlay_step = max(6, int(CARD_HEIGHT * 0.25))
+            overlay_height = max(3, int(CARD_HEIGHT * 0.12))
+            for y in range(0, card_size[1], overlay_step):
+                pygame.draw.rect(overlay, overlay_color, (0, y, card_size[0], overlay_height))
             back_surface.blit(overlay, (0, 0))
             pygame.image.save(back_surface, str(self.target_dir / "back.png"))
         finally:
@@ -536,7 +547,7 @@ class Renderer:
 
     def update_buttons(self, width: int, height: int) -> None:
         x = width - BUTTON_WIDTH - 20
-        y = 120
+        y = BUTTON_AREA_TOP
         self.buttons = {}
         for name in ["Undo", "Redeal", "New Game"]:
             rect = pygame.Rect(x, y, BUTTON_WIDTH, BUTTON_HEIGHT)
@@ -557,7 +568,7 @@ class Renderer:
     def draw_pyramid(self, state: GameState, selection: Optional[SelectedCard]) -> None:
         width, _ = self.screen.get_size()
         start_x = width // 2 - CARD_WIDTH // 2
-        start_y = 120
+        start_y = PLAY_AREA_TOP
         for row_index, row in enumerate(state.pyramid.rows):
             row_width = CARD_WIDTH + (CARD_WIDTH + CARD_SPACING_X) * (row_index)
             offset_x = start_x - row_width // 2
@@ -575,8 +586,8 @@ class Renderer:
                     pygame.draw.rect(self.screen, (255, 255, 255), rect, 1)
 
     def draw_stock_and_waste(self, state: GameState, selection: Optional[SelectedCard]) -> None:
-        start_x = 80
-        y = 120
+        start_x = STOCK_X
+        y = PLAY_AREA_TOP
         stock_rect = pygame.Rect(start_x, y, CARD_WIDTH, CARD_HEIGHT)
         if state.stock:
             self.screen.blit(self.assets.get_back_surface(), stock_rect)
@@ -618,7 +629,8 @@ class Renderer:
     def draw_message(self) -> None:
         if self.message and time.time() < self.message_until:
             surface = self.font.render(self.message, True, (255, 220, 0))
-            rect = surface.get_rect(center=(self.screen.get_width() // 2, 80))
+            message_y = max(40, PLAY_AREA_TOP - 20)
+            rect = surface.get_rect(center=(self.screen.get_width() // 2, message_y))
             self.screen.blit(surface, rect)
         elif self.message and time.time() >= self.message_until:
             self.message = None
@@ -687,8 +699,8 @@ class Game:
             self.renderer.show_message("New game started")
 
     def handle_stock_click(self, position: Tuple[int, int]) -> bool:
-        start_x = 80
-        y = 120
+        start_x = STOCK_X
+        y = PLAY_AREA_TOP
         stock_rect = pygame.Rect(start_x, y, CARD_WIDTH, CARD_HEIGHT)
         if stock_rect.collidepoint(position):
             if not self.state.draw():
@@ -706,7 +718,7 @@ class Game:
     def handle_waste_click(self, position: Tuple[int, int]) -> bool:
         if not self.state.waste:
             return False
-        rect = pygame.Rect(80 + CARD_WIDTH + CARD_SPACING_X, 120, CARD_WIDTH, CARD_HEIGHT)
+        rect = pygame.Rect(STOCK_X + CARD_WIDTH + CARD_SPACING_X, PLAY_AREA_TOP, CARD_WIDTH, CARD_HEIGHT)
         if rect.collidepoint(position):
             index = len(self.state.waste) - 1
             location = ("waste", index, 0)
@@ -737,7 +749,7 @@ class Game:
     def handle_pyramid_click(self, position: Tuple[int, int]) -> bool:
         width, _ = self.renderer.screen.get_size()
         start_x = width // 2 - CARD_WIDTH // 2
-        start_y = 120
+        start_y = PLAY_AREA_TOP
         for row_index, row in enumerate(self.state.pyramid.rows):
             row_width = CARD_WIDTH + (CARD_WIDTH + CARD_SPACING_X) * row_index
             offset_x = start_x - row_width // 2
