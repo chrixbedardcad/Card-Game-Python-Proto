@@ -57,7 +57,26 @@ import urllib.request
 
 RANKS = ["A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"]
 SUITS = ["C", "D", "H", "S"]
-VALUES = {"A": 1, "2": 2, "3": 3, "4": 4, "5": 5, "6": 6, "7": 7, "8": 8, "9": 9, "10": 10, "J": 11, "Q": 12, "K": 13}
+JOKER_RANK = "Joker"
+JOKER_SUIT = "J"
+POINTS_PER_PAIR = 10
+VALUES = {
+    "A": 1,
+    "2": 2,
+    "3": 3,
+    "4": 4,
+    "5": 5,
+    "6": 6,
+    "7": 7,
+    "8": 8,
+    "9": 9,
+    "10": 10,
+    "J": 11,
+    "Q": 12,
+    "K": 13,
+    JOKER_RANK: 0,
+}
+ALL_CARD_KEYS = [(rank, suit) for suit in SUITS for rank in RANKS] + [(JOKER_RANK, JOKER_SUIT)]
 
 
 @dataclass(frozen=True)
@@ -69,13 +88,15 @@ class Card:
 
     @property
     def value(self) -> int:
-        return VALUES[self.rank]
+        return VALUES.get(self.rank, 0)
 
     @property
     def key(self) -> Tuple[str, str]:
         return self.rank, self.suit
 
     def __str__(self) -> str:  # pragma: no cover - debug helper
+        if self.rank == JOKER_RANK:
+            return "Joker"
         return f"{self.rank}{self.suit}"
 
 
@@ -85,6 +106,7 @@ class Deck:
     def __init__(self, seed: Optional[int] = None) -> None:
         self.random = random.Random(seed)
         self.cards: List[Card] = [Card(rank, suit) for suit in SUITS for rank in RANKS]
+        self.cards.append(Card(JOKER_RANK, JOKER_SUIT))
         self.shuffle()
 
     def shuffle(self) -> None:
@@ -147,16 +169,18 @@ class GameState:
         self.seed = seed
         self.max_redeals = max_redeals
         self.history: List[Move] = []
+        self.score = 0
         self.reset()
 
     def reset(self) -> None:
         deck = Deck(self.seed)
         pyramid_cards = [deck.deal() for _ in range(28)]
         self.pyramid = Pyramid(pyramid_cards)
-        self.stock: List[Card] = deck.cards[:]  # remaining 24 cards (deck.cards already shuffled)
+        self.stock: List[Card] = deck.cards[:]  # remaining cards (deck.cards already shuffled)
         self.waste: List[Card] = []
         self.removed_count = 0
         self.redeals_used = 0
+        self.score = 0
         self.history.clear()
 
     def card_exposed(self, location: Tuple[str, int, int]) -> bool:
@@ -216,7 +240,7 @@ class GameState:
         card_b = self.get_card(second)
         if not card_a or not card_b:
             return False
-        if card_a.value + card_b.value != 13:
+        if not self._cards_can_pair(card_a, card_b):
             return False
         if not self.card_exposed(first) or not self.card_exposed(second):
             return False
@@ -237,7 +261,11 @@ class GameState:
                 elif loc_type == "waste":
                     self.waste.append(card)
             return False
-        self.history.append(Move("remove_pair", {"cards": removed_cards}))
+        score_awarded = POINTS_PER_PAIR
+        self.score += score_awarded
+        self.history.append(
+            Move("remove_pair", {"cards": removed_cards, "score_awarded": score_awarded})
+        )
         return True
 
     def get_card(self, location: Tuple[str, int, int]) -> Optional[Card]:
@@ -248,6 +276,11 @@ class GameState:
             if self.waste and a == len(self.waste) - 1:
                 return self.waste[-1]
         return None
+
+    def _cards_can_pair(self, card_a: Card, card_b: Card) -> bool:
+        if card_a.rank == JOKER_RANK or card_b.rank == JOKER_RANK:
+            return True
+        return card_a.value + card_b.value == 13
 
     def undo(self) -> bool:
         if not self.history:
@@ -266,6 +299,7 @@ class GameState:
                     self.restore_pyramid_card(a, b, card)
                 elif loc_type == "waste":
                     self.waste.append(card)
+            self.score -= move.payload.get("score_awarded", 0)
         elif move.type == "redeal":
             self.stock = move.payload["stock_before"]
             self.waste = move.payload["waste_before"]
@@ -297,22 +331,21 @@ class GameState:
         # Check stock or redeals
         if self.stock or (self.waste and self.redeals_used < self.max_redeals):
             return True
-        exposed_cards = []
+        exposed_cards: List[Card] = []
         for r, c, card in self.pyramid.all_cards():
             if card and self.pyramid.is_exposed(r, c):
+                exposed_cards.append(card)
                 if card.value == 13:
                     return True
-                exposed_cards.append(card.value)
         if self.waste:
             card = self.waste[-1]
+            exposed_cards.append(card)
             if card.value == 13:
                 return True
-            exposed_cards.append(card.value)
-        # Check pairs summing to 13
-        values = exposed_cards
-        for i, val in enumerate(values):
-            for j in range(i + 1, len(values)):
-                if val + values[j] == 13:
+        # Check pairs summing to 13 or involving jokers
+        for i, first in enumerate(exposed_cards):
+            for second in exposed_cards[i + 1 :]:
+                if self._cards_can_pair(first, second):
                     return True
         return False
 
@@ -326,13 +359,20 @@ class AssetsManager:
         self.back_image: Optional[pygame.Surface] = None
 
     def ensure_assets(self) -> None:
-        if self.target_dir.exists() and (self.target_dir / "AS.png").exists() and (self.target_dir / "back.png").exists():
+        if (
+            self.target_dir.exists()
+            and (self.target_dir / "AS.png").exists()
+            and (self.target_dir / "back.png").exists()
+        ):
+            if not (self.target_dir / f"{JOKER_RANK}{JOKER_SUIT}.png").exists():
+                self._ensure_joker_asset()
             return
         self.target_dir.mkdir(parents=True, exist_ok=True)
         attempts = [self._download_and_prepare_kenney, self._download_and_prepare_byron]
         for attempt in attempts:
             try:
                 attempt()
+                self._ensure_joker_asset()
                 return
             except Exception:
                 shutil.rmtree(self.target_dir, ignore_errors=True)
@@ -340,6 +380,7 @@ class AssetsManager:
                 continue
         try:
             self._generate_placeholder_assets()
+            self._ensure_joker_asset()
         except Exception as exc:
             raise RuntimeError(
                 "Failed to prepare card assets. Please install pygame with font support or connect to the internet and try again."
@@ -500,14 +541,44 @@ class AssetsManager:
             if needs_quit:
                 pygame.quit()
 
+    def _ensure_joker_asset(self) -> None:
+        filename = self.target_dir / f"{JOKER_RANK}{JOKER_SUIT}.png"
+        if filename.exists():
+            return
+        needs_quit = False
+        needs_font_quit = False
+        if not pygame.get_init():
+            pygame.init()
+            needs_quit = True
+        if not pygame.font.get_init():
+            pygame.font.init()
+            needs_font_quit = True
+        try:
+            surface = pygame.Surface((CARD_WIDTH, CARD_HEIGHT), pygame.SRCALPHA)
+            surface.fill((250, 250, 250))
+            pygame.draw.rect(surface, (120, 20, 120), surface.get_rect(), 6, border_radius=10)
+            font_large = pygame.font.SysFont("arial", max(24, int(CARD_HEIGHT * 0.45)), bold=True)
+            text = font_large.render("JOKER", True, (180, 0, 0))
+            text_rect = text.get_rect(center=(CARD_WIDTH // 2, CARD_HEIGHT // 2))
+            surface.blit(text, text_rect)
+            accent_font = pygame.font.SysFont("arial", max(18, int(CARD_HEIGHT * 0.3)))
+            accent_text = accent_font.render("🃏", True, (20, 80, 160))
+            surface.blit(accent_text, (8, 8))
+            surface.blit(accent_text, (CARD_WIDTH - accent_text.get_width() - 8, CARD_HEIGHT - accent_text.get_height() - 8))
+            pygame.image.save(surface, str(filename))
+        finally:
+            if needs_font_quit:
+                pygame.font.quit()
+            if needs_quit:
+                pygame.quit()
+
     def load_images(self) -> None:
         self.ensure_assets()
-        for rank in RANKS:
-            for suit in SUITS:
-                path = self.target_dir / f"{rank}{suit}.png"
-                image = pygame.image.load(str(path)).convert_alpha()
-                image = pygame.transform.smoothscale(image, (CARD_WIDTH, CARD_HEIGHT))
-                self.card_images[(rank, suit)] = image
+        for rank, suit in ALL_CARD_KEYS:
+            path = self.target_dir / f"{rank}{suit}.png"
+            image = pygame.image.load(str(path)).convert_alpha()
+            image = pygame.transform.smoothscale(image, (CARD_WIDTH, CARD_HEIGHT))
+            self.card_images[(rank, suit)] = image
         back_path = self.target_dir / "back.png"
         back_image = pygame.image.load(str(back_path)).convert_alpha()
         self.back_image = pygame.transform.smoothscale(back_image, (CARD_WIDTH, CARD_HEIGHT))
@@ -578,12 +649,15 @@ class Renderer:
                 rect = pygame.Rect(x, y, CARD_WIDTH, CARD_HEIGHT)
                 if card is None:
                     continue
-                image = self.assets.get_surface(card)
-                self.screen.blit(image, rect)
-                if selection and selection.location == ("pyramid", row_index, col_index):
-                    self._draw_highlight(rect)
-                elif state.pyramid.is_exposed(row_index, col_index):
-                    pygame.draw.rect(self.screen, (255, 255, 255), rect, 1)
+                if state.pyramid.is_exposed(row_index, col_index):
+                    image = self.assets.get_surface(card)
+                    self.screen.blit(image, rect)
+                    if selection and selection.location == ("pyramid", row_index, col_index):
+                        self._draw_highlight(rect)
+                    else:
+                        pygame.draw.rect(self.screen, (255, 255, 255), rect, 1)
+                else:
+                    self.screen.blit(self.assets.get_back_surface(), rect)
 
     def draw_stock_and_waste(self, state: GameState, selection: Optional[SelectedCard]) -> None:
         start_x = STOCK_X
@@ -608,11 +682,12 @@ class Renderer:
         pygame.draw.rect(self.screen, (0, 0, 0), waste_rect, 2)
 
     def draw_hud(self, state: GameState) -> None:
-        width, _ = self.screen.get_size()
+        waste_text = str(state.waste[-1]) if state.waste else "Empty"
+        seed_text = state.seed if state.seed is not None else "random"
         text = (
-            f"Stock: {len(state.stock)} | Waste: {state.waste[-1] if state.waste else 'Empty'} | "
+            f"Score: {state.score} | Stock: {len(state.stock)} | Waste: {waste_text} | "
             f"Removed: {state.removed_count}/28 | Redeals: {state.redeals_used}/{state.max_redeals} | "
-            f"Seed: {state.seed if state.seed is not None else 'random'}"
+            f"Seed: {seed_text}"
         )
         surface = self.font.render(text, True, (255, 255, 255))
         self.screen.blit(surface, (40, 40))
